@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BNR Approval System</title>
+  <style>
+    :root { font-family: Arial, sans-serif; }
+    body { margin: 0; background: #f5f7fb; color: #1f2937; }
+    .container { max-width: 900px; margin: 24px auto; padding: 16px; }
+    .card { background: #fff; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+    h1, h2 { margin-top: 0; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: 12px; }
+    input, textarea, button, select { width: 100%; box-sizing: border-box; padding: 10px; border-radius: 8px; border: 1px solid #d1d5db; }
+    button { background: #1d4ed8; color: #fff; border: none; cursor: pointer; }
+    button.secondary { background: #4b5563; }
+    button.danger { background: #dc2626; }
+    .request { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+    .muted { color: #6b7280; font-size: 12px; }
+    .hidden { display: none; }
+    #message { margin-bottom: 12px; }
+    .ok { color: #166534; }
+    .err { color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>BNR Approval System</h1>
+    <div id="message"></div>
+
+    <div class="card">
+      <h2>API Config</h2>
+      <div class="grid">
+        <div>
+          <label for="apiBaseUrl">Backend Base URL</label>
+          <input id="apiBaseUrl" placeholder="https://your-api.onrender.com" />
+        </div>
+        <div style="display:flex; align-items:end; gap:8px;">
+          <button id="saveApiConfig" class="secondary">Save Base URL</button>
+        </div>
+      </div>
+      <p class="muted">Tip: You can also set <code>window.BNR_API_BASE_URL</code> before this script loads.</p>
+    </div>
+
+    <div class="card" id="authCard">
+      <h2>Register</h2>
+      <div class="grid">
+        <input id="regName" placeholder="Full name" />
+        <input id="regEmail" placeholder="Email" type="email" />
+        <input id="regPassword" placeholder="Password" type="password" />
+      </div>
+      <button id="registerBtn" style="margin-top:10px;">Register</button>
+
+      <h2 style="margin-top:16px;">Login</h2>
+      <div class="grid">
+        <input id="loginEmail" placeholder="Email" type="email" />
+        <input id="loginPassword" placeholder="Password" type="password" />
+      </div>
+      <button id="loginBtn" style="margin-top:10px;">Login</button>
+    </div>
+
+    <div class="card hidden" id="appCard">
+      <h2>Create Approval Request</h2>
+      <div class="grid">
+        <input id="reqTitle" placeholder="Request title" />
+      </div>
+      <textarea id="reqDescription" placeholder="Describe your request" rows="4" style="margin-top:10px;"></textarea>
+      <div class="grid" style="margin-top:10px;">
+        <button id="createRequestBtn">Create Request</button>
+        <button id="refreshRequestsBtn" class="secondary">Refresh Requests</button>
+        <button id="logoutBtn" class="danger">Logout</button>
+      </div>
+
+      <h2 style="margin-top:16px;">Requests</h2>
+      <div id="requestsList"></div>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      baseUrl: localStorage.getItem('BNR_API_BASE_URL') || window.BNR_API_BASE_URL || '',
+      token: localStorage.getItem('BNR_TOKEN') || '',
+      user: JSON.parse(localStorage.getItem('BNR_USER') || 'null')
+    };
+
+    const el = (id) => document.getElementById(id);
+    const showMessage = (text, isError = false) => {
+      const msg = el('message');
+      msg.className = isError ? 'err' : 'ok';
+      msg.textContent = text;
+    };
+
+    function normalizeBaseUrl(url) {
+      return (url || '').trim().replace(/\/$/, '');
+    }
+
+    async function apiFetch(path, options = {}) {
+      const base = normalizeBaseUrl(state.baseUrl);
+      if (!base) throw new Error('Please configure Backend Base URL first.');
+
+      const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+      if (state.token) headers.Authorization = `Bearer ${state.token}`;
+
+      const res = await fetch(`${base}${path}`, { ...options, headers });
+      const data = await res.json().catch(() => ({ success: false, message: 'Invalid JSON response' }));
+      if (!res.ok || data.success === false) {
+        throw new Error(data.message || 'Request failed');
+      }
+      return data;
+    }
+
+    function setAuth(token, user) {
+      state.token = token || '';
+      state.user = user || null;
+      localStorage.setItem('BNR_TOKEN', state.token);
+      localStorage.setItem('BNR_USER', JSON.stringify(state.user));
+      renderAuth();
+    }
+
+    function clearAuth() {
+      localStorage.removeItem('BNR_TOKEN');
+      localStorage.removeItem('BNR_USER');
+      setAuth('', null);
+    }
+
+    function renderAuth() {
+      const loggedIn = !!state.token;
+      el('authCard').classList.toggle('hidden', loggedIn);
+      el('appCard').classList.toggle('hidden', !loggedIn);
+      if (loggedIn) loadRequests();
+    }
+
+    async function register() {
+      try {
+        const payload = {
+          name: el('regName').value.trim(),
+          email: el('regEmail').value.trim(),
+          password: el('regPassword').value
+        };
+        const data = await apiFetch('/register', { method: 'POST', body: JSON.stringify(payload) });
+        showMessage(data.message || 'Registered successfully');
+      } catch (err) {
+        showMessage(err.message, true);
+      }
+    }
+
+    async function login() {
+      try {
+        const payload = {
+          email: el('loginEmail').value.trim(),
+          password: el('loginPassword').value
+        };
+        const data = await apiFetch('/login', { method: 'POST', body: JSON.stringify(payload) });
+        setAuth(data.token, data.user);
+        showMessage(`Welcome ${data.user.name}`);
+      } catch (err) {
+        showMessage(err.message, true);
+      }
+    }
+
+    async function createRequest() {
+      try {
+        const payload = {
+          title: el('reqTitle').value.trim(),
+          description: el('reqDescription').value.trim()
+        };
+        const data = await apiFetch('/requests', { method: 'POST', body: JSON.stringify(payload) });
+        showMessage(data.message || 'Request created');
+        el('reqTitle').value = '';
+        el('reqDescription').value = '';
+        loadRequests();
+      } catch (err) {
+        showMessage(err.message, true);
+      }
+    }
+
+    async function decideRequest(id, action) {
+      try {
+        const comment = prompt(`Optional ${action} comment:`) || '';
+        const data = await apiFetch(`/requests/${id}/decision`, {
+          method: 'PATCH',
+          body: JSON.stringify({ action, comment })
+        });
+        showMessage(data.message);
+        loadRequests();
+      } catch (err) {
+        showMessage(err.message, true);
+      }
+    }
+
+    async function loadRequests() {
+      try {
+        const data = await apiFetch('/requests');
+        const list = el('requestsList');
+        list.innerHTML = '';
+        data.requests.forEach((item) => {
+          const div = document.createElement('div');
+          div.className = 'request';
+          const reviewerButtons = state.user?.role === 'admin' && item.status === 'pending'
+            ? `<div class="grid" style="margin-top:8px;"><button data-id="${item.id}" data-action="approve">Approve</button><button class="danger" data-id="${item.id}" data-action="reject">Reject</button></div>`
+            : '';
+          div.innerHTML = `
+            <strong>${item.title}</strong>
+            <div>${item.description}</div>
+            <div class="muted">Status: ${item.status} | Created: ${new Date(item.created_at).toLocaleString()}</div>
+            ${item.requester_name ? `<div class="muted">Requester: ${item.requester_name} (${item.requester_email})</div>` : ''}
+            ${item.decision_comment ? `<div class="muted">Comment: ${item.decision_comment}</div>` : ''}
+            ${reviewerButtons}
+          `;
+          list.appendChild(div);
+        });
+
+        list.querySelectorAll('button[data-action]').forEach((btn) => {
+          btn.addEventListener('click', () => decideRequest(btn.dataset.id, btn.dataset.action));
+        });
+      } catch (err) {
+        showMessage(err.message, true);
+      }
+    }
+
+    el('saveApiConfig').addEventListener('click', () => {
+      state.baseUrl = normalizeBaseUrl(el('apiBaseUrl').value);
+      localStorage.setItem('BNR_API_BASE_URL', state.baseUrl);
+      showMessage('Backend Base URL saved');
+    });
+
+    el('registerBtn').addEventListener('click', register);
+    el('loginBtn').addEventListener('click', login);
+    el('createRequestBtn').addEventListener('click', createRequest);
+    el('refreshRequestsBtn').addEventListener('click', loadRequests);
+    el('logoutBtn').addEventListener('click', () => {
+      clearAuth();
+      showMessage('Logged out');
+    });
+
+    el('apiBaseUrl').value = state.baseUrl;
+    renderAuth();
+  </script>
+</body>
+</html>
